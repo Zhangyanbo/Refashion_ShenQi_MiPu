@@ -9,7 +9,7 @@ const params = new URLSearchParams(location.search);
 const GLYPH_PX = 0.042;   // 字形 1000 单位 → 页面像素（1em ≈ 42px，约等于标准字高）
 
 const S = {
-  lib: [], env: null, userLib: [], font: null, glyphs: {},
+  lib: [], style: null, env: null, userLib: [], font: null, glyphs: {},
   pageId: null, page: null, sel: { ci: -1, ai: -1 }, mode: 'select',
   view: { x: 0, y: 0, k: 1 }, undo: [], redo: [], dirty: false, clipboard: null,
   mouse: [0, 0], libCat: '全部', built: [],
@@ -41,6 +41,8 @@ function makeEnv() {
   S.userLib.forEach((u) => { lib[u.name] = { ...u, get bbox() { return srcBBox({ t: 'glyph', ch: u.ch, clip: u.clip }); } }; });
   return {
     lib,
+    style: S.style,
+    get pageScale() { return S.page ? S.page.scale || 1 : 1; },
     natural(p) {
       const b = srcBBox(p), k = S.page ? S.page.scale || 1 : 1;
       return p.t === 'sym' ? [b[2] * k, b[3] * k] : [b[2] * GLYPH_PX * k, b[3] * GLYPH_PX * k];
@@ -62,7 +64,7 @@ function buildAll() {
   S.built = S.page.chars.map((c) => {
     try {
       const ast = JZ.build(S.env, c), out = [];
-      JZ.layout(S.env, ast, c.box, out);
+      JZ.place(S.env, ast, c.box, out, c.sem);
       return { ast, out, err: null };
     } catch (e) { return { ast: null, out: [], err: e.message }; }
   });
@@ -526,6 +528,7 @@ function exportSVG() {
 async function main() {
   S.lib = await getJSON('data/library.json', []);
   S.userLib = await getJSON('data/library-user.json', []);
+  S.style = await getJSON('data/style.json', null);   // 由已完成作品学到的排版风格（tools/learn_style.py）
   try { S.font = await opentype.load('/font/main.ttf'); } catch (e) { status('字体加载失败：' + e); }
   S.env = makeEnv();
 

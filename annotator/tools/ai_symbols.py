@@ -2,7 +2,7 @@
 
 用法: python3 -I ai_symbols.py <输入.ai/.pdf> <输出.json>
 
-Illustrator 的原生数据以 zlib 压缩的 PostScript 文本存放在 /AIPrivateDataN 流中。
+Illustrator 的原生数据以 zlib/zstd 压缩的 PostScript 文本存放在 /AIPrivateDataN 流中。
 符号块位于 %AI14_BeginSymbol 与 %AI10_EndSymbol 之间，第一行 "(名称)…" 给出符号名。
 """
 import json
@@ -24,8 +24,13 @@ def private_text(src):
         m = re.search(rb'\n%s 0 obj\n.*?stream\n' % obj, data, re.S)
         buf += data[m.end():data.index(b'\nendstream', m.end())]
     i = buf.find(b'%AI12_CompressedData')
-    assert i >= 0, 'unsupported private data (not zlib)'
-    return zlib.decompressobj().decompress(buf[i + len(b'%AI12_CompressedData'):])
+    if i >= 0:   # Illustrator CC 及更早：zlib
+        return zlib.decompressobj().decompress(buf[i + len(b'%AI12_CompressedData'):])
+    i = buf.find(b'%AI24_ZStandard_Data')
+    if i >= 0:   # Illustrator 2020 起：zstd（调用命令行 zstd）
+        return subprocess.run(['zstd', '-dc'], input=buf[i + len(b'%AI24_ZStandard_Data'):],
+                              capture_output=True, check=True).stdout
+    raise ValueError('unsupported private data')
 
 
 def decode_name(raw):

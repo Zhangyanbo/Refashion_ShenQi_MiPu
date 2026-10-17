@@ -322,6 +322,173 @@
     return applyTweaks(ast, c.tw);
   }
 
+  /* ---------- 风格排版：按已完成作品学到的风格（data/style.json）组字 ----------
+   * 与 layout 的区别：部件按设计原大（pt）摆放，变体由「角色 + 上下文」决定而非格子大小，
+   * 只允许小幅缩放（SCALE_MIN–SCALE_MAX）；整个字再统一乘以页面比例，居中放进字框。
+   */
+  const SCALE_MIN = 0.8, SCALE_MAX = 1.25;
+  const ROLE_OF = { 散: '散', 指: '指', 徽: '徽', 徽十: '徽', 分: '分', 分十: '分', 法: '法', 弦: '弦', 弦十: '弦', 数: '数', 数十: '数', 字: '字' };
+  function styleable(ast) {
+    return atoms(ast).every((a) => ROLE_OF[a.role] && !a.q);
+  }
+  function ptSize(env, part) {
+    if (part.t === 'sym') { const b = env.lib[part.ref].bbox; return [b[2], b[3]]; }
+    const n = env.natural(part), k = env.pageScale || 1;
+    return [n[0] / k, n[1] / k];
+  }
+  function lookup(table, keys) { for (const k of keys) if (table[k] !== undefined) return table[k]; return undefined; }
+  /* 为一个原子挑组件：先查风格表；没见过的数字按目标宽度在同一数字的变体里挑 */
+  function chooseStyled(env, atom, role, ctx) {
+    const st = env.style;
+    if (atom.forced) { const { cands } = resolve(env, atom); return { part: cands[0], s: 1 }; }
+    if (role === '数' && ctx.box && digitOf(atom.v)) {
+      // 单独的数字：大小由原谱决定 —— 挑设计尺寸最接近字框的变体，只做小幅缩放
+      const k = env.pageScale || 1, tw = ctx.box[2] / k, th = ctx.box[3] / k;
+      const syms = resolve(env, atom).cands.filter((c) => c.t === 'sym');
+      let best = null, bd = Infinity;
+      for (const c of syms) {
+        const [w, h] = ptSize(env, c);
+        const e = Math.abs(Math.log(w / tw)) + Math.abs(Math.log(h / th));
+        if (e < bd) { bd = e; best = c; }
+      }
+      if (best) {
+        const [w, h] = ptSize(env, best);
+        return { part: best, s: Math.min(SCALE_MAX, Math.max(SCALE_MIN, Math.sqrt((tw / w) * (th / h)))) };
+      }
+    }
+    const d = digitOf(atom.v), f = ctx.fam, top = ctx.top;
+    const keys = role === '法' ? [`法|${f}|${top}`, `法|${f}`]
+      : role === '弦' ? [`弦|${f}|${top}|${d}`, `弦|${f}|${top}`, `弦|${f}`]
+        : role === '指' ? [`指|${atom.v}|${ctx.hui}`, `指|${atom.v}`]
+          : ['徽', '分', '数'].includes(role) ? [`${role}|${d}`, role] : [`${role}|${atom.v}`, role];
+    const fits = (name) => (d ? digitOf(name) === d : role === '法' || role === '指' ? familyOf(name) === (role === '法' ? f : atom.v) : name === atom.v);
+    for (const k of keys) {
+      const hit = (st.variants[k] || []).find(([name]) => env.lib[name] && fits(name));
+      if (hit) return { part: { t: 'sym', ref: hit[0] }, s: Math.min(SCALE_MAX, Math.max(SCALE_MIN, hit[2])) };
+    }
+    const { cands } = resolve(env, atom);
+    const syms = cands.filter((c) => c.t === 'sym');
+    if (d && syms.length) {
+      const tw = lookup(st.width, keys);
+      if (tw) {
+        let best = syms[0], bd = Infinity;
+        for (const c of syms) { const w = ptSize(env, c)[0], e = Math.abs(Math.log(w / tw)); if (e < bd) { bd = e; best = c; } }
+        const s = Math.min(SCALE_MAX, Math.max(SCALE_MIN, tw / ptSize(env, best)[0]));
+        return { part: best, s };
+      }
+    }
+    return { part: defaultCand(env, atom), s: 1 };
+  }
+  function ubox(rs) {
+    const x0 = Math.min(...rs.map((r) => r[0])), y0 = Math.min(...rs.map((r) => r[1]));
+    return [x0, y0, Math.max(...rs.map((r) => r[0] + r[2])) - x0, Math.max(...rs.map((r) => r[1] + r[3])) - y0];
+  }
+  function styleLayout(env, ast, box, out) {
+    const st = env.style, P = env.style.place, at = {};
+    atoms(ast).forEach((a) => { at[a.role] = a; });
+    const fa = at['法'], fam = fa ? (familyOf(fa.v) || fa.v) : '-';
+    const ctx = { fam, top: at['指'] || at['散'] || at['徽'] ? 'T' : 'N', hui: at['徽'] ? digitOf(at['徽'].v) : 0, box };
+    const placed = [];   // {atom, part, r(pt)}
+    const put = (atom, role) => {
+      const { part, s } = chooseStyled(env, atom, role, ctx);
+      const [w, h] = ptSize(env, part), k = s * atom.s;
+      const e = { atom, part, r: [0, 0, w * k, h * k] };
+      placed.push(e); return e;
+    };
+    const moveTo = (e, x, y) => { e.r[0] = x; e.r[1] = y; };
+    // 带「十」的数（十一～十三）：十在上、个位在下，作为一组
+    const numGroup = (role) => {
+      const ten = at[role + '十'], one = at[role];
+      if (!one) return null;
+      const b = put(one, ROLE_OF[role]);
+      if (!ten) return [b];
+      const t = put(ten, ROLE_OF[role]);
+      moveTo(t, b.r[2] / 2 - t.r[2] / 2, 0); moveTo(b, 0, t.r[3] + 0.5);
+      return [t, b];
+    };
+    const shift = (es, dx, dy) => es.forEach((e) => { e.r[0] += dx; e.r[1] += dy; });
+    // 下半部：法 + 弦
+    let bottom = [];
+    if (fa) {
+      const F = put(fa, '法'); moveTo(F, 0, 0); bottom.push(F);
+      const xs = numGroup('弦');
+      if (xs) {
+        const G = ubox(xs.map((e) => e.r));
+        const pl = P[`弦|${F.part.ref}`] || P[`弦|${fam}`];
+        let cx, cy;
+        if (pl) { cx = pl[0] * F.r[2]; cy = pl[1] * F.r[3]; }
+        else {
+          const s = SLOTS[fam] || [0.2, 0.2, 0.6, 0.6], how = ATTACH[fam];
+          cx = F.r[2] / 2; cy = how === 'below' ? F.r[3] + G[3] / 2 : how === 'above' ? -G[3] / 2 : (s[1] + s[3] / 2) * F.r[3];
+          if (!how) cx = (s[0] + s[2] / 2) * F.r[2];
+        }
+        shift(xs, cx - (G[0] + G[2] / 2), cy - (G[1] + G[3] / 2));
+        bottom = bottom.concat(xs);
+      }
+    } else {
+      for (const r of ['数', '字']) if (at[r]) { const g = r === '数' ? numGroup('数') : [put(at[r], '字')]; bottom = bottom.concat(g); }
+    }
+    // 上半部：指 + 徽 (+ 分)，或 散，或只有徽
+    let topEs = [], kind = null;
+    if (at['指']) {
+      kind = '指';
+      const L = put(at['指'], '指'); moveTo(L, 0, 0); topEs.push(L);
+      const hs = numGroup('徽');
+      if (hs) {
+        const G = ubox(hs.map((e) => e.r)), pl = P[`徽|${L.part.ref}`] || P['徽'] || [-2, -2];
+        shift(hs, L.r[2] + pl[0] - G[0], L.r[3] / 2 + pl[1] - (G[1] + G[3] / 2));
+        topEs = topEs.concat(hs);
+        const fs = numGroup('分');
+        if (fs) {
+          const H = ubox(hs.map((e) => e.r)), Fb = ubox(fs.map((e) => e.r)), pf = P['分'] || [0, 0];
+          shift(fs, H[0] + H[2] / 2 + pf[0] - (Fb[0] + Fb[2] / 2), H[1] + H[3] + pf[1] - Fb[1]);
+          topEs = topEs.concat(fs);
+        }
+      }
+    } else if (at['散']) { kind = '散'; topEs = [put(at['散'], '散')]; }
+    else if (at['徽']) { kind = '徽'; topEs = numGroup('徽'); }
+    if (topEs.length && bottom.length) {
+      const U = ubox(bottom.map((e) => e.r)), F = bottom[0], fk = [F.part.ref, fam, '*'];
+      const g = (name) => { for (const k of fk) if (P[`${name}|${k}`]) return P[`${name}|${k}`][0]; return null; };
+      if (kind === '指' && g('指x') !== null) {
+        // 指：中心对齐指法中心 + 偏移；竖向以下半部顶边为基准。徽：右边对齐下半部右边，顶对齐指顶
+        const L = topEs[0], hs = topEs.slice(1);
+        const lx = F.r[0] + F.r[2] / 2 + g('指x') - L.r[2] / 2, ly = U[1] + g('指y') - L.r[3] / 2;
+        const ddx = lx - L.r[0], ddy = ly - L.r[1];
+        shift(topEs, ddx, ddy);
+        if (hs.length && g('徽x') !== null) {
+          const H = ubox(hs.map((e) => e.r));
+          const hy = P['徽y'] ? L.r[1] + P['徽y'][0] : H[1];
+          shift(hs, U[0] + U[2] + g('徽x') - (H[0] + H[2]), hy - H[1]);
+        }
+      } else {
+        const T = ubox(topEs.map((e) => e.r));
+        const pl = P[`top|${kind}|${F.part.ref}`] || P[`top|${kind}|${fam}`] || P[`top|${kind}`] || [0, 0];
+        shift(topEs, U[0] + U[2] / 2 + pl[0] - (T[0] + T[2] / 2), U[1] - pl[1] - (T[1] + T[3]));
+      }
+    }
+    // 人工校对汇总出的系统偏移（learn_style.py --pages），再叠加本字的微调层（页面像素，换回 pt）
+    for (const e of placed) {
+      const a = P[`adj|${e.atom.role}|${fam}`] || P[`adj|${e.atom.role}|*`];
+      if (a && a[2] >= 3) { e.r[0] += a[0]; e.r[1] += a[1]; }
+    }
+    const k = env.pageScale || 1;
+    placed.forEach((e) => { e.r[0] += e.atom.dx / k; e.r[1] += e.atom.dy / k; });
+    // 整字统一缩放，居中放进字框
+    const C = ubox(placed.map((e) => e.r));
+    const ox = box[0] + box[2] / 2 - (C[0] + C[2] / 2) * k, oy = box[1] + box[3] / 2 - (C[1] + C[3] / 2) * k;
+    for (const e of placed) {
+      const r = [ox + e.r[0] * k, oy + e.r[1] * k, e.r[2] * k, e.r[3] * k];
+      out.push({ node: e.atom, part: { ...e.part, r }, slotRect: box });
+    }
+    return box;
+  }
+  /* 排版入口：有风格表且结构是标准减字时用风格排版，否则用格子排版 */
+  function place(env, ast, box, out, sem) {
+    if (env.style && !String(sem || '').trim().startsWith('{') && styleable(ast)) return styleLayout(env, ast, box, out);
+    return layout(env, ast, box, out);
+  }
+
   /* ---------- 页面文件（.jz） ----------
    *   <语义>  @x,y,w,h  [| 微调]  [✓]  [! 备注]
    */
@@ -370,6 +537,6 @@
     return s;
   }
 
-  root.JZ = { SLOTS, ATTACH, parse, fmt, atoms, resolve, familyOf, familyMembers, layout, natural, compile, applyTweaks, tweaksOf, build,
+  root.JZ = { SLOTS, ATTACH, SCALE_MIN, SCALE_MAX, place, styleLayout, parse, fmt, atoms, resolve, familyOf, familyMembers, layout, natural, compile, applyTweaks, tweaksOf, build,
     parsePage, serializePage, columns, DIGITS };
 })(typeof window !== 'undefined' ? window : globalThis);
