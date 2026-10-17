@@ -153,8 +153,9 @@
       let pw, ph;
       if (part.t === 'circle') { pw = ph = Math.min(w, h); }
       else { const [nw, nh] = env.natural(part); const k = Math.min(w / nw, h / nh); pw = nw * k; ph = nh * k; }
-      pw *= n.s; ph *= n.s;
-      const r = [x + (w - pw) / 2 + n.dx, y + (h - ph) / 2 + n.dy, pw, ph];
+      const ls = n.ls || 1, k = env.pageScale || 1;
+      pw *= n.s * ls; ph *= n.s * ls;
+      const r = [x + (w - pw) / 2 + n.dx + (n.ldx || 0) * k, y + (h - ph) / 2 + n.dy + (n.ldy || 0) * k, pw, ph];
       out.push({ node: n, part: { ...part, r }, slotRect: rect });
       return r;
     }
@@ -184,9 +185,11 @@
    */
   const LEX = {
     LH: { 大: '大', 食: '食', 中: '中', 名: '名', 跪: '跪' },
-    RH: ['勾', '挑', '抹', '打', '剔', '摘', '历', '托', '轮', '蠲', '扶', '拨', '刺', '撮', '伏', '滚', '拂', '泼', '剌'],
+    RH: ['勾', '挑', '抹', '打', '剔', '摘', '历', '托', '轮', '蠲', '全扶', '扶', '拨', '刺', '撮', '伏', '滚', '拂', '泼', '剌'],
   };
   const RH_GLYPH = { 扶: '夫' };   // 没有专门组件、借字形书写的指法
+  // 由两个字形组成的指法：上部角色名、上部字、下部字（全扶 = 人在上、夫在下）
+  const RH_PAIR = { 全扶: ['全', '人', '夫'] };
   const NUMS = ['十一', '十二', '十三', ...DIGITS];
   // 右手指法如何与弦数组合：in = 指法包住弦数（用组件的 slot），below = 弦数在下
   const ATTACH = { 抹: 'below', 轮: 'below', 蠲: 'below', 挑: 'above' };
@@ -233,15 +236,17 @@
     if (tk.length === 1 && tk[0].t === 'text') {
       const chars = [...tk[0].v];
       let n = A(chars[0], '文1', true);
-      for (let i = 1; i < chars.length; i++) n = { k: '/', a: n, b: A(chars[i], '文' + (i + 1), true), r: null };
+      for (let i = 1; i < chars.length; i++) n = { k: '/', a: n, b: A(chars[i], '文' + (i + 1), true), r: i / (i + 1), r0: i / (i + 1) };
       return n;
     }
     if (tk[0].t === '。' && tk.length === 1) return A('○', '圈');
     // 小字注、术语序列（三作、引上十…）：不套减字结构，竖排堆叠
     if (tk.length > 1 && tk.every((t) => ['num', 'word', 'text'].includes(t.t))) {
-      const parts = tk.flatMap((t) => (t.t === 'text' ? [...t.v].map((c) => ({ v: c, q: true })) : [{ v: t.v, q: false }]));
+      // 引号文字与数字都直接用字体字形（如「二作」的二）；术语用组件
+      const parts = tk.flatMap((t) => (t.t === 'text' || t.t === 'num' ? [...t.v].map((c) => ({ v: c, q: true })) : [{ v: t.v, q: false }]));
+      // 像排字一样：每个字占一个等高的格子、在格内居中（按自然高度分格会让扁的「二」「三」贴到顶上）
       let n = A(parts[0].v, '文1', parts[0].q);
-      for (let i = 1; i < parts.length; i++) n = { k: '/', a: n, b: A(parts[i].v, '文' + (i + 1), parts[i].q), r: null };
+      for (let i = 1; i < parts.length; i++) n = { k: '/', a: n, b: A(parts[i].v, '文' + (i + 1), parts[i].q), r: i / (i + 1), r0: i / (i + 1) };
       return n;
     }
     if (tk[0].t === '○') {
@@ -263,7 +268,10 @@
       top = numAtom(tk[p].v, '徽'); p++;
     }
     if (at('rh')) {
-      const fam = tk[p].v, rh = A(RH_GLYPH[fam] || fam, '法', !!RH_GLYPH[fam]); p++;
+      const fam = tk[p].v; p++;
+      const pair = RH_PAIR[fam];
+      const rh = pair ? { k: '/', a: A(pair[1], pair[0], true), b: A(pair[2], '法', true), r: null }
+        : A(RH_GLYPH[fam] || fam, '法', !!RH_GLYPH[fam]);
       if (at('num')) {
         const xian = numAtom(tk[p].v, '弦'); p++;
         bottom = ATTACH[fam] === 'below' ? { k: '/', a: rh, b: xian, r: null }
@@ -303,7 +311,7 @@
   }
   function tweaksOf(ast) {
     const out = [];
-    if (ast.k === '/' && ast.r != null) out.push('/' + Math.round(ast.r * 100));
+    if (ast.k === '/' && ast.r != null && ast.r !== ast.r0) out.push('/' + Math.round(ast.r * 100));   // r0 = 默认比例，不算微调
     const row = ast.k === '|' ? ast : ast.k === '/' && ast.a.k === '|' ? ast.a : null;
     if (row && row.r != null) out.push('|' + Math.round(row.r * 100));
     for (const a of atoms(ast)) {
@@ -315,11 +323,43 @@
     }
     return out.join(' ');
   }
+  /* ---------- 学到的修正：从人工微调中泛化（tools/learn_manual.js → style.delta） ----------
+   * 每个原子按上下文由具体到一般查找修正量 [dx, dy（pt）, 缩放]；
+   * 存在原子的 ldx/ldy/ls 上，与微调层（dx/dy/s）分开，不写回 .jz。
+   */
+  function deltaKeys(ast) {
+    const at = {};
+    atoms(ast).forEach((a) => { at[a.role] = a; });
+    const fa = at['法'];
+    const fam = at['全'] ? '全扶' : fa ? (RH_TEXT[fa.v] || familyOf(fa.v) || fa.v) : at['数'] ? '数' : '-';
+    const hk = at['徽十'] ? '十X' : at['徽'] ? (at['徽'].v === '十' ? '十' : 'N') : '-';
+    const top = at['指'] ? '指' : at['散'] ? '散' : '-';
+    const keys = {};
+    for (const a of atoms(ast)) {
+      const R = a.role;
+      // 由具体到一般；徽位类型（单个 / 十 / 十X）比指法更能决定排法，所以先退到「角色|*|徽位类型」
+      keys[R] = [`${R}|${fam}|${hk}|${top}`, `${R}|${fam}|${hk}`, `${R}|*|${hk}`, `${R}|${fam}`, `${R}`];
+    }
+    return keys;
+  }
+  const RH_TEXT = { 夫: '扶' };
+  function applyLearned(env, ast) {
+    const D = env.style && env.style.delta;
+    if (!D) return ast;
+    const keys = deltaKeys(ast);
+    for (const a of atoms(ast)) {
+      for (const k of keys[a.role] || []) {
+        const d = D[k];
+        if (d) { a.ldx = d[0]; a.ldy = d[1]; a.ls = d[2]; a.lkey = k; break; }
+      }
+    }
+    return ast;
+  }
   /* 编译一个减字：语义 + 微调 → 结构 AST（原子带 role） */
   function build(env, c) {
     const ast = compile(env, c.sem);
     if (c.sem.trim().startsWith('{')) return ast;   // 结构式自带微调
-    return applyTweaks(ast, c.tw);
+    return applyLearned(env, applyTweaks(ast, c.tw));
   }
 
   /* ---------- 风格排版：按已完成作品学到的风格（data/style.json）组字 ----------
@@ -467,18 +507,13 @@
         shift(topEs, U[0] + U[2] / 2 + pl[0] - (T[0] + T[2] / 2), U[1] - pl[1] - (T[1] + T[3]));
       }
     }
-    // 人工校对汇总出的系统偏移（learn_style.py --pages），再叠加本字的微调层（页面像素，换回 pt）
-    for (const e of placed) {
-      const a = P[`adj|${e.atom.role}|${fam}`] || P[`adj|${e.atom.role}|*`];
-      if (a && a[2] >= 3) { e.r[0] += a[0]; e.r[1] += a[1]; }
-    }
     // 整字统一缩放，按「不含微调」的外框居中放进字框；之后才叠加各部件的微调（缩放绕部件中心，偏移以页面像素计）
     const k = env.pageScale || 1;
     const C = ubox(placed.map((e) => e.r));
     const ox = box[0] + box[2] / 2 - (C[0] + C[2] / 2) * k, oy = box[1] + box[3] / 2 - (C[1] + C[3] / 2) * k;
     for (const e of placed) {
-      const a = e.atom, w = e.r[2] * k * a.s, h = e.r[3] * k * a.s;
-      const cx = ox + (e.r[0] + e.r[2] / 2) * k + a.dx, cy = oy + (e.r[1] + e.r[3] / 2) * k + a.dy;
+      const a = e.atom, ls = a.ls || 1, w = e.r[2] * k * a.s * ls, h = e.r[3] * k * a.s * ls;
+      const cx = ox + (e.r[0] + e.r[2] / 2) * k + a.dx + (a.ldx || 0) * k, cy = oy + (e.r[1] + e.r[3] / 2) * k + a.dy + (a.ldy || 0) * k;
       out.push({ node: a, part: { ...e.part, r: [cx - w / 2, cy - h / 2, w, h] }, slotRect: box });
     }
     return box;
@@ -509,15 +544,25 @@
     return page;
   }
   /* 按竖排右起阅读顺序分列：x 中心相距超过 gap 视为新列 */
-  function columns(chars, gap = 22) {
-    const items = chars.map((c, i) => ({ c, i, cx: c.box[0] + c.box[2] / 2 })).sort((a, b) => b.cx - a.cx);
-    const cols = [];
-    for (const it of items) {
-      const col = cols[cols.length - 1];
-      if (col && col.cx - it.cx < gap) { col.items.push(it); col.cx = it.cx; } else cols.push({ cx: it.cx, items: [it] });
+  function columns(chars) {
+    // 先用大字（宽 ≥ 25）的中心定列：排序后相邻中心相距 > 20 即分列；小字注归到最近的列
+    const cx = (c) => c.box[0] + c.box[2] / 2;
+    const main = chars.filter((c) => c.box[2] >= 25).map(cx).sort((a, b) => b - a);
+    const centers = [];
+    for (const x of main) {
+      const last = centers[centers.length - 1];
+      if (last && last.x - x <= 20) { last.xs.push(x); last.x = last.xs.reduce((p, q) => p + q, 0) / last.xs.length; }
+      else centers.push({ x, xs: [x] });
     }
-    cols.forEach((col) => col.items.sort((a, b) => a.c.box[1] - b.c.box[1]));
-    return cols.map((col) => col.items);
+    if (!centers.length) centers.push({ x: 0, xs: [] });
+    const cols = centers.map(() => []);
+    chars.forEach((c, i) => {
+      let bi = 0, bd = Infinity;
+      centers.forEach((col, j) => { const d = Math.abs(col.x - cx(c)); if (d < bd) { bd = d; bi = j; } });
+      cols[bi].push({ c, i, cx: cx(c) });
+    });
+    cols.forEach((col) => col.sort((a, b) => a.c.box[1] - b.c.box[1] || b.cx - a.cx));
+    return cols.filter((col) => col.length);
   }
   function serializePage(page) {
     const b1 = (v) => n1(v);
@@ -538,5 +583,5 @@
   }
 
   root.JZ = { SLOTS, ATTACH, SCALE_MIN, SCALE_MAX, place, styleLayout, parse, fmt, atoms, resolve, familyOf, familyMembers, layout, natural, compile, applyTweaks, tweaksOf, build,
-    parsePage, serializePage, columns, DIGITS };
+    parsePage, serializePage, columns, DIGITS, deltaKeys, applyLearned };
 })(typeof window !== 'undefined' ? window : globalThis);

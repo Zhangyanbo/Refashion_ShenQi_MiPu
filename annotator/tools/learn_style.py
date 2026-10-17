@@ -1,9 +1,8 @@
 """从已完成作品（gt_chars.py 的输出）学习排版风格，写出 data/style.json，供 jz.js 的风格排版使用。
 
-用法: python3 -I learn_style.py <chars.json> <library.json> <style.json> [--only 获麟.pdf] [--pages data/pages]
+用法: python3 -I learn_style.py <chars.json> <library.json> <style.json> [--only 获麟.pdf]
 
---pages：同时读取已校对（✓）减字的微调层，把人工偏移按「角色|指法」取中位数，
-         写成 place 中的 adj|<角色>|<指法> = [dx, dy]（pt），排版时叠加到默认位置上。
+注意：会重写 style.json（不含 delta）；之后需再跑 node tools/learn_manual.js 生成人工修正层。
 
 学到的内容（单位 pt）：
   variants  每个「角色|上下文」最常用的组件及其缩放（中位数）
@@ -59,27 +58,6 @@ def keys_for(role, p, ctx):
     if role in ('徽', '分', '数'):
         return [f'{role}|{d}', role]
     return [f'{role}|{p["name"]}', role]
-
-
-def tweak_offsets(pages_dir):
-    """从 .jz 页面中已校对字的微调层收集 角色~dx,dy（页面像素 → pt）。"""
-    import glob
-    adj = defaultdict(list)
-    for path in glob.glob(f'{pages_dir}/*.jz'):
-        scale = 1.0
-        for line in open(path, encoding='utf-8'):
-            m = re.match(r'^scale\s+([\d.]+)', line)
-            if m:
-                scale = float(m.group(1)); continue
-            m = re.match(r'^(\S+)\s+@\S+\s+\|\s*(.*?)(?:\s+✓)', line)
-            if not m:
-                continue
-            sem, tw = m.groups()
-            f = next((fam(ch) for ch in sem if fam(ch) in RH), '-')
-            for role, dx, dy in re.findall(r'(\S+?)(?:=[^~*\s]+)?~(-?[\d.]+),(-?[\d.]+)', tw):
-                adj[f'adj|{role}|{f}'].append((float(dx) / scale, float(dy) / scale))
-                adj[f'adj|{role}|*'].append((float(dx) / scale, float(dy) / scale))
-    return adj
 
 
 def main(src, lib_path, out, *flags):
@@ -139,9 +117,6 @@ def main(src, lib_path, out, *flags):
         if P['徽'] and P['分']:
             H, F = P['徽'][0]['box'], P['分'][0]['box']
             place['分'].append(((F[0] + F[2] / 2) - (H[0] + H[2] / 2), F[1] - (H[1] + H[3])))
-    if '--pages' in flags:
-        for k, v in tweak_offsets(flags[flags.index('--pages') + 1]).items():
-            place[k] = v
     style = {
         'variants': {k: [[n, cnt, median(scl[(k, n)])] for n, cnt in v.most_common()] for k, v in var.items()},
         'height': {k: round(median(v), 2) for k, v in hts.items()},
