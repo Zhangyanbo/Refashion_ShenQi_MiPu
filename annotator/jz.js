@@ -391,8 +391,8 @@
     const placed = [];   // {atom, part, r(pt)}
     const put = (atom, role) => {
       const { part, s } = chooseStyled(env, atom, role, ctx);
-      const [w, h] = ptSize(env, part), k = s * atom.s;
-      const e = { atom, part, r: [0, 0, w * k, h * k] };
+      const [w, h] = ptSize(env, part);   // 组字时不计本字微调（*s），保证每个微调只影响它自己
+      const e = { atom, part, r: [0, 0, w * s, h * s] };
       placed.push(e); return e;
     };
     const moveTo = (e, x, y) => { e.r[0] = x; e.r[1] = y; };
@@ -472,14 +472,14 @@
       const a = P[`adj|${e.atom.role}|${fam}`] || P[`adj|${e.atom.role}|*`];
       if (a && a[2] >= 3) { e.r[0] += a[0]; e.r[1] += a[1]; }
     }
+    // 整字统一缩放，按「不含微调」的外框居中放进字框；之后才叠加各部件的微调（缩放绕部件中心，偏移以页面像素计）
     const k = env.pageScale || 1;
-    placed.forEach((e) => { e.r[0] += e.atom.dx / k; e.r[1] += e.atom.dy / k; });
-    // 整字统一缩放，居中放进字框
     const C = ubox(placed.map((e) => e.r));
     const ox = box[0] + box[2] / 2 - (C[0] + C[2] / 2) * k, oy = box[1] + box[3] / 2 - (C[1] + C[3] / 2) * k;
     for (const e of placed) {
-      const r = [ox + e.r[0] * k, oy + e.r[1] * k, e.r[2] * k, e.r[3] * k];
-      out.push({ node: e.atom, part: { ...e.part, r }, slotRect: box });
+      const a = e.atom, w = e.r[2] * k * a.s, h = e.r[3] * k * a.s;
+      const cx = ox + (e.r[0] + e.r[2] / 2) * k + a.dx, cy = oy + (e.r[1] + e.r[3] / 2) * k + a.dy;
+      out.push({ node: a, part: { ...e.part, r: [cx - w / 2, cy - h / 2, w, h] }, slotRect: box });
     }
     return box;
   }

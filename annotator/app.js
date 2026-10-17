@@ -12,7 +12,7 @@ const S = {
   lib: [], style: null, env: null, userLib: [], font: null, glyphs: {},
   pageId: null, page: null, sel: { ci: -1, ai: -1 }, mode: 'select',
   view: { x: 0, y: 0, k: 1 }, undo: [], redo: [], dirty: false, clipboard: null,
-  mouse: [0, 0], libCat: '全部', built: [],
+  mouse: [0, 0], libCat: '全部', built: [], loadedText: null,
 };
 
 /* ---------- 组件与字形 ---------- */
@@ -70,6 +70,10 @@ function buildAll() {
   });
 }
 function charBox(ci) { return S.page.chars[ci].box; }
+function unionRect(rs) {
+  const x0 = Math.min(...rs.map((r) => r[0])), y0 = Math.min(...rs.map((r) => r[1]));
+  return [x0, y0, Math.max(...rs.map((r) => r[0] + r[2])) - x0, Math.max(...rs.map((r) => r[1] + r[3])) - y0];
+}
 
 /* ---------- 渲染 ---------- */
 let clipSeq = 0;
@@ -108,6 +112,7 @@ function render() {
 
   const sw = 1 / S.view.k, show = $('#showBoxes').checked;
   let ui = '';
+  const hits = [];   // 点击区域：字框 ∪ 墨迹；小的放上层，选中字的部件放最上层
   pg.chars.forEach((c, ci) => {
     const [x, y, w, h] = c.box, b = S.built[ci], selC = S.sel.ci === ci;
     if (show || selC || b.err) {
@@ -115,12 +120,15 @@ function render() {
       ui += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${b.err ? 'rgba(192,57,43,.15)' : 'none'}" stroke="${col}" stroke-width="${(selC ? 2 : 1) * sw}" ${c.ok || selC ? '' : `stroke-dasharray="${4 * sw} ${3 * sw}"`}/>`;
       if (c.note) ui += `<circle cx="${x + w}" cy="${y}" r="${3.5 * sw}" fill="var(--danger)"/>`;
     }
-    ui += `<rect class="hit" data-ci="${ci}" data-ai="-1" x="${x}" y="${y}" width="${w}" height="${h}" fill="transparent"/>`;
-    if (selC) b.out.forEach((o, ai) => {
-      const r = o.part.r;
-      ui += `<rect class="hit" data-ci="${ci}" data-ai="${ai}" x="${r[0]}" y="${r[1]}" width="${Math.max(r[2], 3)}" height="${Math.max(r[3], 3)}" fill="transparent" stroke="rgba(47,111,214,.35)" stroke-width="${sw}"/>`;
-    });
+    const r = unionRect([c.box, ...b.out.map((o) => o.part.r)]);
+    hits.push({ r, ci, ai: -1, z: 0 });
+    if (selC) b.out.forEach((o, ai) => hits.push({ r: o.part.r, ci, ai, z: 1 }));
   });
+  hits.sort((a, b) => a.z - b.z || b.r[2] * b.r[3] - a.r[2] * a.r[3]);
+  for (const t of hits) {
+    const [x, y, w, h] = t.r;
+    ui += `<rect class="hit" data-ci="${t.ci}" data-ai="${t.ai}" x="${x}" y="${y}" width="${Math.max(w, 3)}" height="${Math.max(h, 3)}" fill="transparent"${t.z ? ` stroke="rgba(47,111,214,.35)" stroke-width="${sw}"` : ''}/>`;
+  }
   const sr = selRect();
   if (sr) {
     if (S.sel.ai >= 0) {
@@ -193,6 +201,7 @@ function panels() {
     <label class="muted">微调层（只影响位置与变体）</label>
     <div class="row"><input id="cTw" type="text" value="${esc(c.tw)}" placeholder="如：弦~1,-2 徽*0.9 /40" style="flex:1;font-family:ui-monospace,monospace"></div>
     ${b.err ? `<div style="color:var(--danger)">${esc(b.err)}</div>` : `<div class="muted" style="font-family:ui-monospace,monospace">结构：${esc(JZ.fmt(b.ast))}</div>`}
+    ${quotedJianzi(c.sem) ? `<div style="color:var(--ai)">引号内按普通字形处理。若「${esc(quotedJianzi(c.sem))}」是减字，请去掉引号。</div>` : ''}
     <textarea id="cNote" rows="2" placeholder="备注（不确定之处；有备注的字显示红点）">${esc(c.note)}</textarea>
     <ul class="parts">${b.out.map((o, i) => `<li data-ai="${i}" class="${i === S.sel.ai ? 'sel' : ''}">${thumb(o.part, 20)}<span>${esc(o.node.role || '')}</span><span class="muted">${esc(partName(o.part))}</span></li>`).join('')}</ul>
     <div class="row"><button id="cStatus">${c.ok ? '改回待校对' : '标为已校对 ⏎'}</button><button id="cTwClear">清除微调</button><button id="cDel" class="danger">删除此字</button></div>`;
@@ -221,6 +230,10 @@ function panels() {
   if ($('#pClip')) $('#pClip').onclick = () => openClip(p);
   document.querySelectorAll('#partPanel .tile').forEach((t) => { t.onclick = () => forceVariant(vars[+t.dataset.vi]); });
 }
+function quotedJianzi(sem) {
+  const m = sem.match(/^'(.+)'$/); if (!m) return null;
+  try { const ast = JZ.compile(S.env, m[1]); return JZ.atoms(ast).some((a) => a.role === '法' || a.role === '指') ? m[1] : null; } catch { return null; }
+}
 function variantsOf(a, p) {
   const name = p.t === 'sym' ? p.ref : a.v;
   const fam = JZ.familyOf(name) || (p.t === 'glyph' && DIGITS.includes(p.ch) ? '数' + (DIGITS.indexOf(p.ch) + 1) : null);
@@ -246,6 +259,29 @@ function originalAtom(c, role) {
 }
 function forceVariant(v) {
   editAtom((a) => { a.forced = true; if (v.t === 'glyph') { a.v = v.ch; a.q = true; } else { a.v = v.ref; a.q = false; } });
+}
+/* 选中部件时点选组件库：同一类（同为打、同为四…）→ 微调层指定变体；不同类 → 改写语义层 */
+const RH_TEXT = { 夫: '扶' };
+function semToken(a) { return a.q ? (RH_TEXT[a.v] || a.v) : a.v; }
+function pickComponent(name) {
+  const { ci, ai } = S.sel, c = S.page.chars[ci], b = S.built[ci];
+  const o = b && b.out[ai]; if (!o) return;
+  const role = o.node.role;
+  const orig = originalAtom(c, role);
+  const famNew = JZ.familyOf(name), famOld = orig.q ? null : JZ.familyOf(orig.v);
+  const semantic = ['散', '指', '徽', '分', '法', '弦', '数'].includes(role) && famNew && famNew !== famOld;
+  if (!semantic) { editAtom((a) => { a.v = name; a.q = false; a.forced = true; }); return; }
+  const tok = famNew.startsWith('数') ? JZ.DIGITS[+famNew.slice(1) - 1] : famNew;
+  commit(() => {
+    const at = {};
+    JZ.atoms(JZ.compile(S.env, c.sem)).forEach((a) => { at[a.role] = semToken(a); });
+    const base = role.replace(/十$/, '');
+    delete at[base + '十']; at[base] = tok;
+    const num = (r) => (at[r] ? (at[r + '十'] ? '十' : '') + at[r] : '');
+    c.sem = (at['散'] || '') + (at['指'] || '') + num('徽') + (at['分'] ? num('分') + '分' : '') + (at['法'] || '') + num('弦') + num('数') + (at['字'] || '');
+    c.tw = c.tw.split(/\s+/).filter((t) => t && !new RegExp(`^${base}十?[=~*]`).test(t)).join(' ');
+  });
+  status(`语义已改为「${c.sem}」`);
 }
 function cycleVariant(dir) {
   const o = S.built[S.sel.ci] && S.built[S.sel.ci].out[S.sel.ai]; if (!o) return;
@@ -429,7 +465,7 @@ function libPanel() {
   document.querySelectorAll('#libGrid .tile').forEach((t) => {
     t.onclick = () => {
       const it = items[+t.dataset.i];
-      if (S.sel.ai >= 0) editAtom((a) => { a.v = it.name; a.forced = true; });   // 选中部件时：指定为此变体
+      if (S.sel.ai >= 0) pickComponent(it.name);
       else { navigator.clipboard && navigator.clipboard.writeText(it.name); status(`组件名「${it.name}」已复制`); }
     };
   });
@@ -498,13 +534,24 @@ async function post(path, text) {
   if (!r.ok) throw new Error(await r.text());
 }
 async function save() {
-  try { await post(`data/pages/${S.pageId}.jz`, JZ.serializePage(S.page)); S.dirty = false; status('已保存 ' + new Date().toLocaleTimeString()); }
-  catch (e) { status('保存失败：' + e.message); }
+  try {
+    // 文件在打开之后被别处改过（另一个标签页、或 Claude 改了文件）时，先确认再覆盖
+    const disk = await getText(`data/pages/${S.pageId}.jz`).catch(() => null);
+    if (disk !== null && S.loadedText !== null && disk !== S.loadedText &&
+        !confirm('磁盘上的这一页在你打开之后被修改过。仍然用当前内容覆盖吗？\n（取消后可刷新页面载入新版本；旧版本会自动备份在 data/.history/）')) {
+      status('已取消保存'); return;
+    }
+    const text = JZ.serializePage(S.page);
+    await post(`data/pages/${S.pageId}.jz`, text);
+    S.loadedText = text; S.dirty = false; status('已保存 ' + new Date().toLocaleTimeString());
+  } catch (e) { status('保存失败：' + e.message); }
 }
 async function loadPage(id) {
   if (S.dirty && !confirm('当前页有未保存的修改，确定切换？')) { $('#pageSel').value = S.pageId; return; }
   S.pageId = id;
-  const pg = JZ.parsePage(await getText(`data/pages/${id}.jz`));
+  const text = await getText(`data/pages/${id}.jz`);
+  S.loadedText = text;
+  const pg = JZ.parsePage(text);
   if (pg.errors.length) alert(pg.errors.join('\n'));
   delete pg.errors;
   S.page = pg;
