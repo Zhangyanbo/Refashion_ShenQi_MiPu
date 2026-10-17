@@ -218,3 +218,6 @@ pip-log.txt
 
 #Mr Developer
 .mr.developer.cfg
+
+# 减字谱标注器：自动备份
+annotator/data/.history/

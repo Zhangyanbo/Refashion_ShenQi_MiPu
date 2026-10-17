@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>减字谱标注器</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header id="bar">
+  <select id="pageSel" title="页面"></select>
+  <span class="sep"></span>
+  <button data-mode="select" class="on" title="选择 / 移动 (V)">选择 V</button>
+  <button data-mode="box" title="拖出新字框 (B)">新字框 B</button>
+  <span class="sep"></span>
+  <label>底图 <input id="scanOp" type="range" min="0" max="1" step="0.05" value="1"></label>
+  <label>矢量 <input id="vecOp" type="range" min="0" max="1" step="0.05" value="0.85"></label>
+  <label><input id="redMode" type="checkbox" checked> 红色对照</label>
+  <label><input id="showBoxes" type="checkbox" checked> 字框</label>
+  <span class="sep"></span>
+  <button id="undoBtn" title="撤销 (⌘Z)">撤销</button>
+  <button id="redoBtn" title="重做 (⇧⌘Z)">重做</button>
+  <button id="fitBtn" title="整页 (0)">整页</button>
+  <button id="saveBtn" title="保存 (⌘S)">保存</button>
+  <button id="exportBtn" title="导出矢量 SVG">导出 SVG</button>
+  <span id="status"></span>
+</header>
+<main>
+  <svg id="canvas" xmlns="http://www.w3.org/2000/svg">
+    <g id="world">
+      <image id="scan"></image>
+      <g id="vec"></g>
+      <g id="ui"></g>
+    </g>
+  </svg>
+  <aside id="panel">
+    <section id="pageInfo"></section>
+    <section id="charPanel"></section>
+    <section id="partPanel"></section>
+    <section id="libPanel">
+      <h3>组件库</h3>
+      <div class="row">
+        <input id="libSearch" placeholder="搜索组件名，如 勾 / 小6；选中部件时点选 = 指定变体">
+      </div>
+      <div id="libTabs"></div>
+      <div id="libGrid"></div>
+    </section>
+    <section id="help">
+      <details>
+        <summary>操作说明</summary>
+        <ul>
+          <li>每个减字两层：<b>语义层</b>写意思（名十勾四），<b>微调层</b>只调位置/大小/变体。语法见 JZ.md</li>
+          <li>单击字选中；再单击其中部件选中部件；Esc 返回上一级</li>
+          <li>拖动字 = 移动字框；拖动部件 = 写入微调「角色~dx,dy」；角柄缩放部件 = 「角色*倍数」</li>
+          <li>方向键微调 1px，⇧ 10px，⌥ 0.2px</li>
+          <li><b>[ / ]</b> 切换部件的尺寸变体（写入「角色=变体」）；<b>R</b> 清除该部件微调</li>
+          <li><b>Tab / ⇧Tab</b> 按阅读顺序跳字；<b>E</b> 编辑语义；<b>Enter</b> 标为已校对</li>
+          <li>⌘C / ⌘V 复制粘贴整字（粘贴到鼠标处）；⌘D 原地复制；Delete 删除字</li>
+          <li>空白处拖动平移，双指滑动平移，⌘/捏合缩放；0 回到整页</li>
+        </ul>
+      </details>
+    </section>
+  </aside>
+</main>
+<dialog id="clipDlg">
+  <h3>裁切字形 <span id="clipCh"></span></h3>
+  <p class="hint">拖动顶点；在空白处单击插入顶点；⌥+单击删除顶点。</p>
+  <svg id="clipSvg" width="420" height="420"></svg>
+  <div class="row">
+    <button id="clipReset">重置为整字</button>
+    <input id="clipName" placeholder="组件名（至少两字）">
+    <span class="grow"></span>
+    <button id="clipCancel">取消</button>
+    <button id="clipApply" class="primary">存入组件库并使用</button>
+    <button id="clipSaveLib" hidden></button>
+  </div>
+</dialog>
+<script src="vendor/opentype.min.js"></script>
+<script src="jz.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
